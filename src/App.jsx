@@ -13,8 +13,8 @@ const TEMAS = {
   verde: "#3DE87E",
 };
 
-// --- Datos de ejemplo ---
-const EJERCICIOS = [
+// --- Datos de ejemplo (valor INICIAL: el usuario podrá crear/eliminar desde la app) ---
+const EJERCICIOS_INICIALES = [
   { id: "press-banca", nombre: "Press de banca", grupo: "Pecho", color: "#E85D3D" },
   { id: "sentadilla", nombre: "Sentadilla", grupo: "Pierna", color: "#3D8BE8" },
   { id: "peso-muerto", nombre: "Peso muerto", grupo: "Espalda", color: "#3DE87E" },
@@ -22,6 +22,9 @@ const EJERCICIOS = [
   { id: "curl-biceps", nombre: "Curl de bíceps", grupo: "Brazo", color: "#B23DE8" },
   { id: "remo-barra", nombre: "Remo con barra", grupo: "Espalda", color: "#3DE87E" },
 ];
+
+// Paleta de colores para elegir al crear un ejercicio nuevo
+const PALETA_COLORES = ["#E85D3D", "#3D8BE8", "#3DE87E", "#E8D33D", "#B23DE8", "#3DBFE8", "#FF6B9D"];
 
 // Cada "día" es un plan con nombre propio y una lista ORDENADA de ids de ejercicios.
 // Así puedes armar "Día de pierna", "Día de espalda", etc., cada uno con su propio orden.
@@ -57,6 +60,34 @@ const CALENTAMIENTO_INICIAL = [
   { id: "zancadas", nombre: "Zancadas dinámicas", duracion: 30 },
   { id: "plancha", nombre: "Plancha", duracion: 30 },
 ];
+
+// Hook reutilizable: funciona exactamente como useState, pero además guarda el
+// valor en localStorage cada vez que cambia, y lo recupera de ahí al arrancar.
+// Así los datos sobreviven a cerrar el navegador, reiniciar el celular, etc.
+// "clave" identifica el dato (debe ser única por cada cosa que quieras guardar).
+function useEstadoPersistente(clave, valorInicial) {
+  const [valor, setValor] = useState(() => {
+    try {
+      const guardado = window.localStorage.getItem(clave);
+      return guardado !== null ? JSON.parse(guardado) : valorInicial;
+    } catch (error) {
+      // Si localStorage no está disponible o el dato guardado está corrupto,
+      // seguimos con el valor inicial en vez de romper la app.
+      return valorInicial;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(clave, JSON.stringify(valor));
+    } catch (error) {
+      // Guardar puede fallar (ej. modo incógnito con almacenamiento bloqueado);
+      // la app sigue funcionando igual, solo que esta vez no persiste.
+    }
+  }, [clave, valor]);
+
+  return [valor, setValor];
+}
 
 function formatearTiempo(segundos) {
   const m = Math.floor(segundos / 60);
@@ -288,13 +319,130 @@ function Calentamiento({ lista, setLista, colorAcento }) {
   );
 }
 
+// --- Pestaña de ejercicios: crear y eliminar los ejercicios disponibles ---
+// "ejercicios" llega como prop desde GymTracker. Al eliminar uno, también lo
+// quitamos de cualquier "día" que lo tuviera incluido (para no dejar referencias rotas).
+function Ejercicios({ ejercicios, setEjercicios, dias, setDias, colorAcento }) {
+  const [nombre, setNombre] = useState("");
+  const [grupo, setGrupo] = useState("");
+  const [color, setColor] = useState(PALETA_COLORES[0]);
+  const [imagen, setImagen] = useState("");
+  const [confirmandoId, setConfirmandoId] = useState(null);
+
+  // Grupos musculares ya existentes, para sugerirlos al escribir (autocompletar)
+  const gruposExistentes = useMemo(() => [...new Set(ejercicios.map((e) => e.grupo))], [ejercicios]);
+
+  const crearEjercicio = () => {
+    if (!nombre.trim() || !grupo.trim()) return;
+    const nuevo = { id: `ej-${Date.now()}`, nombre: nombre.trim(), grupo: grupo.trim(), color, imagen: imagen.trim() || null };
+    setEjercicios((prev) => [...prev, nuevo]);
+    setNombre("");
+    setGrupo("");
+    setImagen("");
+    setColor(PALETA_COLORES[0]);
+  };
+
+  const eliminarEjercicio = (id) => {
+    setEjercicios((prev) => prev.filter((e) => e.id !== id));
+    // Lo quitamos también de cualquier día que lo tuviera en su lista ordenada
+    setDias((prev) => prev.map((d) => ({ ...d, ejerciciosIds: d.ejerciciosIds.filter((eid) => eid !== id) })));
+    setConfirmandoId(null);
+  };
+
+  // Agrupamos la lista existente por grupo muscular, para mostrarla organizada
+  const porGrupo = useMemo(() => {
+    const grupos = {};
+    ejercicios.forEach((e) => {
+      if (!grupos[e.grupo]) grupos[e.grupo] = [];
+      grupos[e.grupo].push(e);
+    });
+    return grupos;
+  }, [ejercicios]);
+
+  return (
+    <div>
+      <p style={{ fontSize: 11, color: "#9A968C", fontWeight: 700, marginBottom: 10, letterSpacing: "0.02em" }}>NUEVO EJERCICIO</p>
+
+      <div style={{ background: "#26241F", border: "1px solid #33312D", borderRadius: 12, padding: 14, marginBottom: 24 }}>
+        <label style={{ fontSize: 11, color: "#9A968C", fontWeight: 600 }}>NOMBRE</label>
+        <input value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Ej. Extensión de tríceps"
+          style={{ width: "100%", marginTop: 6, marginBottom: 12, padding: "10px 12px", borderRadius: 10, border: "1px solid #33312D", background: "#1C1B19", color: "#F2EFE9", fontSize: 14 }} />
+
+        <label style={{ fontSize: 11, color: "#9A968C", fontWeight: 600 }}>GRUPO MUSCULAR</label>
+        <input value={grupo} onChange={(e) => setGrupo(e.target.value)} placeholder="Ej. Brazo" list="grupos-musculares"
+          style={{ width: "100%", marginTop: 6, marginBottom: 12, padding: "10px 12px", borderRadius: 10, border: "1px solid #33312D", background: "#1C1B19", color: "#F2EFE9", fontSize: 14 }} />
+        <datalist id="grupos-musculares">
+          {gruposExistentes.map((g) => <option key={g} value={g} />)}
+        </datalist>
+
+        <label style={{ fontSize: 11, color: "#9A968C", fontWeight: 600 }}>IMAGEN (OPCIONAL)</label>
+        <input value={imagen} onChange={(e) => setImagen(e.target.value)} placeholder="/ejercicios/press-banca.webp"
+          style={{ width: "100%", marginTop: 6, marginBottom: 12, padding: "10px 12px", borderRadius: 10, border: "1px solid #33312D", background: "#1C1B19", color: "#F2EFE9", fontSize: 14 }} />
+        <p style={{ fontSize: 11, color: "#6B675F", margin: "-6px 0 12px" }}>Debe ser una ruta dentro de la carpeta "public" de tu proyecto, o una URL. Si la dejas vacía, se muestra un ícono genérico.</p>
+
+        <label style={{ fontSize: 11, color: "#9A968C", fontWeight: 600, display: "block", marginBottom: 8 }}>COLOR</label>
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          {PALETA_COLORES.map((c) => (
+            <button key={c} onClick={() => setColor(c)} aria-label={`Color ${c}`}
+              style={{ width: 26, height: 26, borderRadius: "50%", background: c, cursor: "pointer", border: color === c ? "2px solid #F2EFE9" : "2px solid transparent", padding: 0 }} />
+          ))}
+        </div>
+
+        <button onClick={crearEjercicio} disabled={!nombre.trim() || !grupo.trim()}
+          style={{ width: "100%", padding: "11px 0", borderRadius: 10, border: "none", cursor: (!nombre.trim() || !grupo.trim()) ? "not-allowed" : "pointer", background: (!nombre.trim() || !grupo.trim()) ? "#3A3833" : colorAcento, color: (!nombre.trim() || !grupo.trim()) ? "#6B675F" : "#1C1B19", fontSize: 14, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+          <Plus size={16} strokeWidth={2.5} /> Crear ejercicio
+        </button>
+      </div>
+
+      <p style={{ fontSize: 11, color: "#9A968C", fontWeight: 700, marginBottom: 10, letterSpacing: "0.02em" }}>TUS EJERCICIOS</p>
+
+      {Object.keys(porGrupo).length === 0 ? (
+        <p style={{ textAlign: "center", color: "#6B675F", fontSize: 13, padding: "20px 0" }}>Todavía no has creado ningún ejercicio.</p>
+      ) : (
+        Object.entries(porGrupo).map(([nombreGrupo, ejs]) => (
+          <div key={nombreGrupo} style={{ marginBottom: 16 }}>
+            <p style={{ fontSize: 11, color: "#6B675F", margin: "0 0 6px" }}>{nombreGrupo}</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {ejs.map((ej) => (
+                <div key={ej.id} style={{ display: "flex", alignItems: "center", gap: 8, background: "#26241F", border: "1px solid #33312D", borderRadius: 10, padding: "10px 12px" }}>
+                  {ej.imagen ? (
+                    <img src={ej.imagen} alt="" loading="lazy" style={{ width: 28, height: 28, borderRadius: 6, objectFit: "cover", flexShrink: 0 }} />
+                  ) : (
+                    <div style={{ width: 10, height: 10, borderRadius: "50%", background: ej.color, flexShrink: 0 }} />
+                  )}
+                  <span style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{ej.nombre}</span>
+                  {confirmandoId === ej.id ? (
+                    <>
+                      <button onClick={() => eliminarEjercicio(ej.id)} style={{ padding: "5px 9px", borderRadius: 8, border: "none", background: "#E85D3D", color: "#1C1B19", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                        Sí, eliminar
+                      </button>
+                      <button onClick={() => setConfirmandoId(null)} style={{ padding: "5px 9px", borderRadius: 8, border: "1px solid #33312D", background: "transparent", color: "#9A968C", fontSize: 11, cursor: "pointer" }}>
+                        Cancelar
+                      </button>
+                    </>
+                  ) : (
+                    <button onClick={() => setConfirmandoId(ej.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#6B675F" }} aria-label="Eliminar ejercicio">
+                      <Trash2 size={16} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
 // --- Pestaña de rutina (registrar + historial por ejercicio) ---
 // "dias", "diaActivoId" e "historico" ahora llegan como props desde el componente
 // padre (GymTracker), para que NO se pierdan cuando cambias a la pestaña de
 // Calentamiento y vuelves — solo se destruiría si viviera dentro de este componente.
-function Rutina({ dias, setDias, diaActivoId, setDiaActivoId, historico, setHistorico, colorAcento }) {
+function Rutina({ dias, setDias, diaActivoId, setDiaActivoId, historico, setHistorico, ejercicios, colorAcento }) {
   const [vista, setVista] = useState("registrar");
-  const [ejercicioActivo, setEjercicioActivo] = useState(EJERCICIOS[0]);
+  const [ejercicioActivo, setEjercicioActivo] = useState(ejercicios[0] || null);
+  const [imagenFallo, setImagenFallo] = useState(false); // true si la imagen no pudo cargar (ej. sin internet)
   const [series, setSeries] = useState([]);
   const [peso, setPeso] = useState(20);
   const [reps, setReps] = useState(10);
@@ -311,19 +459,20 @@ function Rutina({ dias, setDias, diaActivoId, setDiaActivoId, historico, setHist
 
   const diaActivo = dias.find((d) => d.id === diaActivoId) || dias[0];
   const ejerciciosDelDia = diaActivo.ejerciciosIds
-    .map((id) => EJERCICIOS.find((e) => e.id === id))
+    .map((id) => ejercicios.find((e) => e.id === id))
     .filter(Boolean);
 
   // Si el ejercicio activo ya no pertenece al día seleccionado (cambiaste de día,
   // o lo quitaste en modo edición), pasamos automáticamente al primero del día.
   useEffect(() => {
     if (ejerciciosDelDia.length === 0) return;
-    if (!ejerciciosDelDia.find((e) => e.id === ejercicioActivo.id)) {
+    if (!ejercicioActivo || !ejerciciosDelDia.find((e) => e.id === ejercicioActivo.id)) {
       setEjercicioActivo(ejerciciosDelDia[0]);
+      setImagenFallo(false);
       setSeries([]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [diaActivoId, dias]);
+  }, [diaActivoId, dias, ejercicios]);
 
   const seleccionarDia = (id) => { setDiaActivoId(id); setSeries([]); setConfirmandoEliminar(false); };
 
@@ -374,7 +523,7 @@ function Rutina({ dias, setDias, diaActivoId, setDiaActivoId, historico, setHist
 
   // Ejercicios que todavía no están en el día activo, agrupados por grupo muscular
   const disponiblesPorGrupo = useMemo(() => {
-    const disponibles = EJERCICIOS.filter((e) => !diaActivo.ejerciciosIds.includes(e.id));
+    const disponibles = ejercicios.filter((e) => !diaActivo.ejerciciosIds.includes(e.id));
     const grupos = {};
     disponibles.forEach((e) => {
       if (!grupos[e.grupo]) grupos[e.grupo] = [];
@@ -392,7 +541,7 @@ function Rutina({ dias, setDias, diaActivoId, setDiaActivoId, historico, setHist
   const quitarSerie = (id) => setSeries(series.filter((s) => s.id !== id));
 
   const guardarSesion = () => {
-    if (series.length === 0) return;
+    if (series.length === 0 || !ejercicioActivo) return;
     const hoy = new Date().toLocaleDateString("es-CO", { day: "2-digit", month: "short" });
     const nuevaSesion = {
       fecha: hoy,
@@ -407,7 +556,7 @@ function Rutina({ dias, setDias, diaActivoId, setDiaActivoId, historico, setHist
     setVista("historial");
   };
 
-  const sesiones = historico[ejercicioActivo.id] || [];
+  const sesiones = ejercicioActivo ? (historico[ejercicioActivo.id] || []) : [];
   // Para la gráfica usamos el peso máximo de cada sesión
   const datosGrafica = sesiones.map((s) => ({ fecha: s.fecha, peso: Math.max(...s.series.map((x) => x.peso)) }));
   const progreso = useMemo(() => {
@@ -520,7 +669,7 @@ function Rutina({ dias, setDias, diaActivoId, setDiaActivoId, historico, setHist
             <p style={{ fontSize: 13, color: "#6B675F" }}>Este día no tiene ejercicios todavía. Dale a "Editar" para agregar.</p>
           ) : (
             ejerciciosDelDia.map((ej) => (
-              <button key={ej.id} onClick={() => { setEjercicioActivo(ej); setSeries([]); }}
+              <button key={ej.id} onClick={() => { setEjercicioActivo(ej); setSeries([]); setImagenFallo(false); }}
                 style={{ flexShrink: 0, padding: "10px 16px", borderRadius: 999, border: ej.id === ejercicioActivo.id ? `1.5px solid ${ej.color}` : "1.5px solid #33312D", background: ej.id === ejercicioActivo.id ? `${ej.color}22` : "transparent", color: ej.id === ejercicioActivo.id ? "#F2EFE9" : "#9A968C", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
                 {ej.nombre}
               </button>
@@ -532,10 +681,15 @@ function Rutina({ dias, setDias, diaActivoId, setDiaActivoId, historico, setHist
       {ejerciciosDelDia.length === 0 ? null : (
       <>
       <div style={{ background: "#26241F", borderRadius: 16, padding: 20, marginBottom: 20, border: "1px solid #33312D" }}>
-        <div style={{ width: "100%", height: 140, borderRadius: 12, marginBottom: 16, background: `linear-gradient(135deg, ${ejercicioActivo.color}33, #26241F)`, display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid ${ejercicioActivo.color}55` }}>
-          <Flame size={36} color={ejercicioActivo.color} />
-          <span style={{ marginLeft: 8, fontSize: 12, color: "#9A968C" }}>Aquí va el video/imagen del ejercicio</span>
-        </div>
+        {ejercicioActivo.imagen && !imagenFallo ? (
+          <img src={ejercicioActivo.imagen} alt={ejercicioActivo.nombre} loading="lazy" onError={() => setImagenFallo(true)}
+            style={{ width: "100%", height: 140, borderRadius: 12, marginBottom: 16, objectFit: "cover", border: `1px solid ${ejercicioActivo.color}55` }} />
+        ) : (
+          <div style={{ width: "100%", height: 140, borderRadius: 12, marginBottom: 16, background: `linear-gradient(135deg, ${ejercicioActivo.color}33, #26241F)`, display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid ${ejercicioActivo.color}55` }}>
+            <Flame size={36} color={ejercicioActivo.color} />
+            <span style={{ marginLeft: 8, fontSize: 12, color: "#9A968C" }}>Aquí va el video/imagen del ejercicio</span>
+          </div>
+        )}
         <h2 style={{ margin: "0 0 2px", fontSize: 17, fontWeight: 700 }}>{ejercicioActivo.nombre}</h2>
         <p style={{ margin: 0, fontSize: 13, color: "#9A968C" }}>Grupo muscular: {ejercicioActivo.grupo}</p>
       </div>
@@ -647,11 +801,12 @@ export default function GymTracker() {
 
   // Estos tres viven aquí (en el padre, que nunca se destruye) para que no se
   // pierdan al cambiar entre las pestañas "Calentar" y "Rutina".
-  const [dias, setDias] = useState(DIAS_INICIALES);
-  const [diaActivoId, setDiaActivoId] = useState(DIAS_INICIALES[0].id);
-  const [historico, setHistorico] = useState(HISTORICO_INICIAL);
-  const [calentamiento, setCalentamiento] = useState(CALENTAMIENTO_INICIAL);
-  const [tema, setTema] = useState("rojo");
+  const [dias, setDias] = useEstadoPersistente("gymtracker:dias", DIAS_INICIALES);
+  const [diaActivoId, setDiaActivoId] = useEstadoPersistente("gymtracker:diaActivoId", DIAS_INICIALES[0].id);
+  const [historico, setHistorico] = useEstadoPersistente("gymtracker:historico", HISTORICO_INICIAL);
+  const [ejercicios, setEjercicios] = useEstadoPersistente("gymtracker:ejercicios", EJERCICIOS_INICIALES);
+  const [calentamiento, setCalentamiento] = useEstadoPersistente("gymtracker:calentamiento", CALENTAMIENTO_INICIAL);
+  const [tema, setTema] = useEstadoPersistente("gymtracker:tema", "rojo");
   const colorAcento = TEMAS[tema];
 
   return (
@@ -687,6 +842,7 @@ export default function GymTracker() {
           {[
             { id: "calentamiento", label: "Calentar" },
             { id: "rutina", label: "Rutina" },
+            { id: "ejercicios", label: "Ejercicios" },
           ].map((s) => (
             <button key={s.id} onClick={() => setSeccion(s.id)}
               style={{ flex: 1, padding: "10px 0", borderRadius: 7, border: "none", cursor: "pointer", background: seccion === s.id ? colorAcento : "transparent", color: seccion === s.id ? "#1C1B19" : "#9A968C", fontSize: 13, fontWeight: 700 }}>
@@ -704,6 +860,16 @@ export default function GymTracker() {
             setDiaActivoId={setDiaActivoId}
             historico={historico}
             setHistorico={setHistorico}
+            ejercicios={ejercicios}
+            colorAcento={colorAcento}
+          />
+        )}
+        {seccion === "ejercicios" && (
+          <Ejercicios
+            ejercicios={ejercicios}
+            setEjercicios={setEjercicios}
+            dias={dias}
+            setDias={setDias}
             colorAcento={colorAcento}
           />
         )}
