@@ -448,14 +448,16 @@ function SelectorColor({ valor, onCambio }) {
   );
 }
 
-// Imagen o GIF del ejercicio; si no hay o no carga (por ejemplo sin internet), muestra un recuadro de respaldo
-function ImagenEjercicio({ src, nombre, color, alto = 160 }) {
+// Imagen o GIF del ejercicio; si no hay o no carga (por ejemplo sin internet), muestra un recuadro de respaldo.
+// "contain" escala la imagen para que se vea COMPLETA sin importar sus dimensiones (en vez de recortarla);
+// el fondo blanco hace que las franjas laterales se mezclen con el fondo blanco de las ilustraciones.
+function ImagenEjercicio({ src, nombre, color, alto = 200 }) {
   const [fallo, setFallo] = useState(false);
   useEffect(() => { setFallo(false); }, [src]);
   if (src && !fallo) {
     return (
       <img src={src} alt={nombre} loading="lazy" onError={() => setFallo(true)}
-        style={{ width: "100%", height: alto, borderRadius: 12, objectFit: "cover", border: `1px solid ${color}55`, display: "block" }} />
+        style={{ width: "100%", height: alto, borderRadius: 12, objectFit: "contain", background: "#FFFFFF", border: `1px solid ${color}55`, display: "block" }} />
     );
   }
   return (
@@ -1659,7 +1661,7 @@ function Ejercicios({ datos, setDatos, colorAcento }) {
                 <div key={ej.id}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, background: C.tarjeta, border: `1px solid ${C.borde}`, borderRadius: 10, padding: "10px 10px 10px 12px" }}>
                     {ej.imagen ? (
-                      <img src={ej.imagen} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }} style={{ width: 28, height: 28, borderRadius: 6, objectFit: "cover", flexShrink: 0 }} />
+                      <img src={ej.imagen} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }} style={{ width: 28, height: 28, borderRadius: 6, objectFit: "contain", background: "#FFFFFF", flexShrink: 0 }} />
                     ) : (
                       <span style={{ width: 10, height: 10, borderRadius: "50%", background: ej.color, flexShrink: 0 }} />
                     )}
