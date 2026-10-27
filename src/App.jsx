@@ -905,7 +905,10 @@ function Rutina({ datos, rutina, setRutina, config, setSesiones, visible }) {
       progreso = 1;
       etiquetaAnillo = "¡Listo!";
     }
-    const sigue = rutina.fase === "descanso_ejercicios" && !esUltimo ? `Sigue: ${rutina.pasos[rutina.indice + 1].nombre}`
+    // Durante el descanso entre ejercicios se anuncia el próximo, con su peso (o su duración si es por tiempo)
+    const proximo = rutina.fase === "descanso_ejercicios" && !esUltimo ? rutina.pasos[rutina.indice + 1] : null;
+    const sigue = proximo
+      ? `Sigue: ${proximo.nombre} · ${proximo.tipo === "fuerza" ? formatearPeso(proximo.peso) : formatearTiempo(proximo.duracion)}`
       : rutina.fase === "descanso_series" ? `Próxima: serie ${rutina.serie + 1} de ${p.series}` : "";
     const circunferencia = 2 * Math.PI * 60;
     const completadosAhora = completados(rutina);
@@ -948,7 +951,7 @@ function Rutina({ datos, rutina, setRutina, config, setSesiones, visible }) {
               </div>
             </div>
             <p style={{ textAlign: "center", fontSize: 13, color: C.suave, margin: 0 }}>{etiquetaAnillo}</p>
-            {sigue && <p style={{ textAlign: "center", fontSize: 12, color: C.tenue, margin: "4px 0 0" }}>{sigue}</p>}
+            {sigue && <p style={{ textAlign: "center", fontSize: proximo ? 14 : 12, fontWeight: proximo ? 600 : 400, color: proximo ? C.texto : C.tenue, margin: "6px 0 0" }}>{sigue}</p>}
           </div>
         ) : (
           <div style={{ ...estiloTarjeta, textAlign: "center", marginBottom: 16, padding: "18px 12px" }}>
@@ -1699,6 +1702,7 @@ function Configuracion({ config, setConfig, datos, setDatos, sesiones, setSesion
   const [confirmarSesionId, setConfirmarSesionId] = useState(null);
   const [copiaPendiente, setCopiaPendiente] = useState(null); // copia leída, a la espera de confirmar
   const [mensajeCopia, setMensajeCopia] = useState(null); // { tipo: "ok" | "error", texto }
+  const [verSesiones, setVerSesiones] = useState(false); // la lista de sesiones anteriores empieza plegada
   const entradaArchivo = useRef(null);
   const entradaCopia = useRef(null);
 
@@ -1870,8 +1874,12 @@ function Configuracion({ config, setConfig, datos, setDatos, sesiones, setSesion
       </div>
 
       {/* Sesiones anteriores */}
-      <p style={estiloTitulo}>SESIONES ANTERIORES</p>
-      {sesiones.length === 0 ? (
+      <button onClick={() => setVerSesiones(!verSesiones)} aria-expanded={verSesiones}
+        style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: C.tarjeta, border: `1px solid ${C.borde}`, borderRadius: 12, padding: "12px 14px", color: C.texto, cursor: "pointer", marginBottom: verSesiones ? 10 : 0 }}>
+        <span style={{ fontSize: 13, fontWeight: 700 }}>Sesiones anteriores ({sesiones.length})</span>
+        {verSesiones ? <ChevronUp size={16} color={C.suave} /> : <ChevronDown size={16} color={C.suave} />}
+      </button>
+      {!verSesiones ? null : sesiones.length === 0 ? (
         <p style={{ fontSize: 13, color: C.tenue, padding: "6px 0 20px" }}>Todavía no hay sesiones guardadas. Se guardan al terminar una rutina.</p>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
