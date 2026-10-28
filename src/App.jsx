@@ -45,6 +45,14 @@ const CONFIG_INICIAL = {
   tema: "rojo",
 };
 
+// Pendientes diarios (por ejemplo "Tomar creatina"). Cada uno elige los días de la semana en que aparece.
+const DIAS_CORTOS = ["L", "M", "X", "J", "V", "S", "D"];
+const PENDIENTES_INICIALES = {
+  items: [{ id: "pend-creatina", nombre: "Tomar creatina", dias: [true, true, true, true, true, true, true] }],
+  fecha: "", // día al que corresponden las marcas
+  hechos: [], // ids marcados ese día; al cambiar de día se consideran desmarcados
+};
+
 // Versión nueva de la app: empieza de cero. Se borran los datos de la versión anterior
 // (claves "gymtracker:..."), conservando solo el tema de color elegido.
 function limpiarDatosAnteriores() {
@@ -237,6 +245,18 @@ function useAhora(activo) {
     return () => { clearInterval(id); document.removeEventListener("visibilitychange", alVolver); };
   }, [activo]);
   return ahora;
+}
+
+// La fecha de hoy, actualizada si la app queda abierta pasada la medianoche o si vuelves a ella
+function useHoy() {
+  const [hoy, setHoy] = useState(() => hoyISO());
+  useEffect(() => {
+    const actualizar = () => setHoy(hoyISO());
+    const id = setInterval(actualizar, 30000);
+    document.addEventListener("visibilitychange", actualizar);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", actualizar); };
+  }, []);
+  return hoy;
 }
 
 // Mantiene la pantalla encendida mientras hay una rutina en curso (si el navegador lo permite)
@@ -636,18 +656,21 @@ function construirSesion(r, ahora) {
 }
 
 // --- Copia de seguridad (exportar / importar) ---
-// La copia incluye ejercicios, categorías, grupos, calendario, pesos y sesiones.
+// La copia incluye ejercicios, categorías, grupos, calendario, pesos, sesiones y pendientes diarios.
 // No incluye sonido, vibración ni tema (son del dispositivo) ni la rutina en curso.
 const VERSION_COPIA = 1;
 
-function construirCopia(datos, sesiones) {
-  return {
+function construirCopia(datos, sesiones, pendientes = null) {
+  const copia = {
     app: "gymtracker",
     version: VERSION_COPIA,
     exportadoEn: new Date().toISOString(),
     datos: { categorias: datos.categorias, ejercicios: datos.ejercicios, grupos: datos.grupos, calendario: datos.calendario },
     sesiones,
   };
+  // Se copian los pendientes diarios (la lista), no las marcas de hoy
+  if (Array.isArray(pendientes)) copia.pendientes = pendientes.map((p) => ({ id: p.id, nombre: p.nombre, dias: p.dias }));
+  return copia;
 }
 
 // Lee el texto de un archivo de copia. Si es válido, devuelve los datos ya "limpios":
@@ -727,7 +750,39 @@ function validarCopia(texto) {
     })),
   }));
 
-  return { ok: true, datos: { categorias, ejercicios, grupos, calendario }, sesiones, exportadoEn: typeof obj.exportadoEn === "string" ? obj.exportadoEn : "" };
+  // Los pendientes son opcionales: una copia anterior sin ellos no toca los pendientes del dispositivo
+  let pendientes = null;
+  if (Array.isArray(obj.pendientes)) {
+    pendientes = obj.pendientes.filter((p) => p && esTexto(p.id) && esTexto(p.nombre)).map((p) => ({
+      id: p.id,
+      nombre: p.nombre,
+      dias: Array.from({ length: 7 }, (_, i) => !(Array.isArray(p.dias) && p.dias[i] === false)),
+    }));
+  }
+
+  return { ok: true, datos: { categorias, ejercicios, grupos, calendario }, sesiones, pendientes, exportadoEn: typeof obj.exportadoEn === "string" ? obj.exportadoEn : "" };
+}
+
+// --- Pendientes diarios ---
+// Lunes = 0 ... Domingo = 6, a partir de una fecha AAAA-MM-DD
+function indiceDiaDeISO(iso) {
+  const [a, m, d] = iso.split("-").map(Number);
+  return (new Date(a, m - 1, d).getDay() + 6) % 7;
+}
+
+// Qué pendientes tocan hoy y cuáles están marcados. Las marcas guardadas son de un día concreto:
+// si ese día no es hoy, todo cuenta como desmarcado (así se reinician solos cada día).
+function pendientesDeHoy(pendientes, hoy) {
+  const indice = indiceDiaDeISO(hoy);
+  const marcados = pendientes.fecha === hoy ? pendientes.hechos : [];
+  const lista = pendientes.items.filter((it) => it.dias[indice]).map((it) => ({ ...it, hecho: marcados.includes(it.id) }));
+  return { lista, hechos: lista.filter((it) => it.hecho).length };
+}
+
+function alternarPendiente(pendientes, id, hoy) {
+  const base = pendientes.fecha === hoy ? pendientes.hechos : [];
+  const hechos = base.includes(id) ? base.filter((x) => x !== id) : [...base, id];
+  return { ...pendientes, fecha: hoy, hechos };
 }
 
 function fechaDeCopia(iso) {
@@ -770,10 +825,125 @@ function ResumenSesion({ sesion }) {
   );
 }
 
+// Checklist diario ("Tomar creatina"...). Se ve arriba de la pantalla de Rutina, pero no durante una rutina en curso.
+function PendientesHoy({ pendientes, setPendientes, colorAcento }) {
+  const hoy = useHoy();
+  const [editando, setEditando] = useState(false);
+  const [nuevo, setNuevo] = useState("");
+  const [errorNuevo, setErrorNuevo] = useState("");
+  const [confirmarId, setConfirmarId] = useState(null);
+  const items = pendientes.items;
+  const { lista, hechos } = pendientesDeHoy(pendientes, hoy);
+  const todoListo = lista.length > 0 && hechos === lista.length;
+
+  const alternar = (id) => setPendientes((p) => alternarPendiente(p, id, hoy));
+  const actualizarItems = (fn) => setPendientes((p) => ({ ...p, items: fn(p.items) }));
+  const alternarDia = (id, dia) => actualizarItems((l) => l.map((it) => (it.id === id ? { ...it, dias: it.dias.map((v, i) => (i === dia ? !v : v)) } : it)));
+  const mover = (indice, direccion) => actualizarItems((l) => {
+    const destino = indice + direccion;
+    if (destino < 0 || destino >= l.length) return l;
+    const nuevos = [...l];
+    [nuevos[indice], nuevos[destino]] = [nuevos[destino], nuevos[indice]];
+    return nuevos;
+  });
+  const eliminar = (id) => {
+    setPendientes((p) => ({ ...p, items: p.items.filter((it) => it.id !== id), hechos: p.hechos.filter((x) => x !== id) }));
+    setConfirmarId(null);
+  };
+  const anadir = () => {
+    const nombre = nuevo.trim();
+    if (!nombre) return;
+    if (items.some((it) => it.nombre.toLowerCase() === nombre.toLowerCase())) {
+      setErrorNuevo("Ya existe un pendiente con ese nombre.");
+      return;
+    }
+    actualizarItems((l) => [...l, { id: uid("pend"), nombre, dias: [true, true, true, true, true, true, true] }]);
+    setNuevo("");
+    setErrorNuevo("");
+  };
+
+  return (
+    <div style={{ marginBottom: 26 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+        <p style={{ ...estiloTitulo, margin: 0 }}>PENDIENTES DE HOY</p>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          {!editando && lista.length > 0 && (
+            <span style={{ fontSize: 12, fontWeight: 700, color: todoListo ? C.ok : C.suave }}>{todoListo ? "Todo listo" : `${hechos} de ${lista.length}`}</span>
+          )}
+          <button onClick={() => { setEditando(!editando); setConfirmarId(null); setErrorNuevo(""); }}
+            style={{ background: "none", border: "none", cursor: "pointer", color: editando ? colorAcento : C.suave, display: "flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 600 }}>
+            {editando ? <><Check size={14} /> Listo</> : <><Pencil size={14} /> Editar</>}
+          </button>
+        </div>
+      </div>
+
+      {!editando ? (
+        lista.length === 0 ? (
+          <p style={{ fontSize: 13, color: C.tenue, margin: 0 }}>
+            {items.length === 0 ? "No tienes pendientes. Toca Editar para añadir uno." : "Hoy no tienes pendientes."}
+          </p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {lista.map((it) => (
+              <button key={it.id} role="checkbox" aria-checked={it.hecho} onClick={() => alternar(it.id)}
+                style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left", background: C.tarjeta, border: `1px solid ${it.hecho ? `${colorAcento}66` : C.borde}`, borderRadius: 10, padding: "12px 14px", cursor: "pointer", color: it.hecho ? C.suave : C.texto }}>
+                <span style={{ width: 22, height: 22, borderRadius: 6, flexShrink: 0, border: it.hecho ? "none" : `2px solid ${C.tenue}`, background: it.hecho ? colorAcento : "transparent", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  {it.hecho && <Check size={15} color="#1C1B19" strokeWidth={3} />}
+                </span>
+                <span style={{ fontSize: 14, fontWeight: 600, textDecoration: it.hecho ? "line-through" : "none" }}>{it.nombre}</span>
+              </button>
+            ))}
+          </div>
+        )
+      ) : (
+        <div>
+          {items.length === 0 && <p style={{ fontSize: 13, color: C.tenue, margin: "0 0 10px" }}>Todavía no tienes pendientes.</p>}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+            {items.map((it, i) => (
+              <div key={it.id}>
+                <div style={{ background: C.tarjeta, border: `1px solid ${C.borde}`, borderRadius: 10, padding: "10px 12px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+                    <NombreEditable valor={it.nombre} ariaLabel={`Nombre de ${it.nombre}`} existentes={items.filter((x) => x.id !== it.id).map((x) => x.nombre)}
+                      onGuardar={(n) => actualizarItems((l) => l.map((x) => (x.id === it.id ? { ...x, nombre: n } : x)))} estilo={{ padding: "8px 10px", fontSize: 13, fontWeight: 600 }} />
+                    <button onClick={() => mover(i, -1)} disabled={i === 0} aria-label={`Subir ${it.nombre}`} style={estiloIcono(C.suave, i === 0)}><ChevronUp size={16} /></button>
+                    <button onClick={() => mover(i, 1)} disabled={i === items.length - 1} aria-label={`Bajar ${it.nombre}`} style={estiloIcono(C.suave, i === items.length - 1)}><ChevronDown size={16} /></button>
+                    <button onClick={() => setConfirmarId(it.id)} aria-label={`Eliminar ${it.nombre}`} style={estiloIcono()}><Trash2 size={16} /></button>
+                  </div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    {DIAS_CORTOS.map((letra, d) => (
+                      <button key={d} onClick={() => alternarDia(it.id, d)} aria-label={`${it.nombre}: ${DIAS_SEMANA[d]}`} aria-pressed={it.dias[d]}
+                        style={{ width: 32, height: 32, borderRadius: "50%", padding: 0, fontSize: 12, fontWeight: 700, cursor: "pointer", border: it.dias[d] ? `1.5px solid ${colorAcento}` : `1.5px solid ${C.borde}`, background: it.dias[d] ? `${colorAcento}22` : "transparent", color: it.dias[d] ? C.texto : C.tenue }}>
+                        {letra}
+                      </button>
+                    ))}
+                  </div>
+                  {!it.dias.some(Boolean) && <p style={{ margin: "8px 0 0", fontSize: 11, color: C.peligro }}>No aparecerá ningún día. Marca al menos uno.</p>}
+                </div>
+                {confirmarId === it.id && (
+                  <div style={{ marginTop: 6 }}>
+                    <ConfirmarInline mensaje={`¿Eliminar el pendiente "${it.nombre}"?`} textoConfirmar="Sí, eliminar" onConfirmar={() => eliminar(it.id)} onCancelar={() => setConfirmarId(null)} />
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input value={nuevo} onChange={(e) => { setNuevo(e.target.value); setErrorNuevo(""); }} placeholder="Ej. Pre-entrenamiento" aria-label="Nuevo pendiente"
+              onKeyDown={(e) => { if (e.key === "Enter") anadir(); }} style={{ ...estiloInput, flex: 1, padding: "9px 12px", fontSize: 13 }} />
+            <button onClick={anadir} style={{ padding: "0 16px", borderRadius: 10, border: "none", background: colorAcento, color: "#1C1B19", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Añadir</button>
+          </div>
+          {errorNuevo && <p style={{ margin: "6px 0 0", fontSize: 11, color: C.peligro }}>{errorNuevo}</p>}
+          <p style={{ fontSize: 11, color: C.tenue, margin: "10px 0 0", lineHeight: 1.45 }}>Marca los días en que aparece cada pendiente. Se desmarcan solos cada día.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // La rutina en curso vive en GymTracker (y se guarda en el dispositivo), así que sobrevive
 // a cambiar de pestaña y a cerrar la app. Este componente nunca se desmonta: solo se oculta,
 // para que los temporizadores y avisos sigan funcionando mientras estás en otra pestaña.
-function Rutina({ datos, rutina, setRutina, config, setSesiones, visible }) {
+function Rutina({ datos, rutina, setRutina, config, setSesiones, pendientes, setPendientes, visible }) {
   const { grupos, ejercicios } = datos;
   const [grupoId, setGrupoId] = useState(null);
   const [confirmar, setConfirmar] = useState(null); // null | "siguiente" | "terminar" | "salir"
@@ -1008,6 +1178,7 @@ function Rutina({ datos, rutina, setRutina, config, setSesiones, visible }) {
   const entradasValidas = grupoSel ? grupoSel.entradas.filter((en) => ejercicios.some((e) => e.id === en.ejercicioId)) : [];
   return contenedor(
     <div>
+      <PendientesHoy pendientes={pendientes} setPendientes={setPendientes} colorAcento={TEMAS[config.tema] || TEMAS.rojo} />
       <p style={estiloTitulo}>GRUPO DE ENTRENAMIENTO</p>
       {grupos.length === 0 ? (
         <p style={{ textAlign: "center", color: C.tenue, fontSize: 13, padding: "30px 0", lineHeight: 1.5 }}>
@@ -1697,7 +1868,7 @@ function Ejercicios({ datos, setDatos, colorAcento }) {
 
 const TAMANO_MAXIMO_SONIDO = 700 * 1024; // el sonido propio se guarda en el dispositivo: debe ser liviano
 
-function Configuracion({ config, setConfig, datos, setDatos, sesiones, setSesiones, colorAcento }) {
+function Configuracion({ config, setConfig, datos, setDatos, sesiones, setSesiones, pendientes, setPendientes, colorAcento }) {
   const [errorSonido, setErrorSonido] = useState("");
   const [confirmarSesionId, setConfirmarSesionId] = useState(null);
   const [copiaPendiente, setCopiaPendiente] = useState(null); // copia leída, a la espera de confirmar
@@ -1723,7 +1894,7 @@ function Configuracion({ config, setConfig, datos, setDatos, sesiones, setSesion
   // Descarga un archivo con todos los datos de entrenamiento
   const exportarCopia = () => {
     const nombre = `rutina-copia-${hoyISO()}.json`;
-    const json = JSON.stringify(construirCopia(datos, sesiones), null, 2);
+    const json = JSON.stringify(construirCopia(datos, sesiones, pendientes.items), null, 2);
     const url = URL.createObjectURL(new Blob([json], { type: "application/json" }));
     const enlace = document.createElement("a");
     enlace.href = url;
@@ -1742,7 +1913,7 @@ function Configuracion({ config, setConfig, datos, setDatos, sesiones, setSesion
   const puedeCompartir = typeof navigator !== "undefined" && typeof navigator.canShare === "function";
   const compartirCopia = async () => {
     const nombre = `rutina-copia-${hoyISO()}.txt`;
-    const archivo = new File([JSON.stringify(construirCopia(datos, sesiones), null, 2)], nombre, { type: "text/plain" });
+    const archivo = new File([JSON.stringify(construirCopia(datos, sesiones, pendientes.items), null, 2)], nombre, { type: "text/plain" });
     if (!navigator.canShare({ files: [archivo] })) {
       setMensajeCopia({ tipo: "error", texto: "Este navegador no permite compartir archivos. Usa Exportar copia." });
       return;
@@ -1779,10 +1950,12 @@ function Configuracion({ config, setConfig, datos, setDatos, sesiones, setSesion
 
   const confirmarImportacion = () => {
     if (!copiaPendiente) return;
-    const { datos: nuevosDatos, sesiones: nuevasSesiones } = copiaPendiente;
+    const { datos: nuevosDatos, sesiones: nuevasSesiones, pendientes: nuevosPendientes } = copiaPendiente;
     setDatos(nuevosDatos);
     setSesiones(nuevasSesiones);
-    setMensajeCopia({ tipo: "ok", texto: `Copia importada: ${nuevosDatos.ejercicios.length} ejercicios, ${nuevosDatos.grupos.length} grupos y ${nuevasSesiones.length} sesiones.` });
+    // Si la copia trae pendientes diarios, reemplazan los de este dispositivo (con las marcas en blanco)
+    if (nuevosPendientes) setPendientes({ items: nuevosPendientes, fecha: "", hechos: [] });
+    setMensajeCopia({ tipo: "ok", texto: `Copia importada: ${nuevosDatos.ejercicios.length} ejercicios, ${nuevosDatos.grupos.length} grupos y ${nuevasSesiones.length} sesiones.${nuevosPendientes ? ` Pendientes diarios: ${nuevosPendientes.length}.` : ""}` });
     setCopiaPendiente(null);
   };
 
@@ -1845,7 +2018,7 @@ function Configuracion({ config, setConfig, datos, setDatos, sesiones, setSesion
       <p style={estiloTitulo}>COPIA DE SEGURIDAD</p>
       <div style={{ ...estiloTarjeta, marginBottom: 22 }}>
         <p style={{ margin: "0 0 12px", fontSize: 12, color: C.suave, lineHeight: 1.45 }}>
-          Guarda tus ejercicios, grupos, calendario, pesos y sesiones en un archivo, o pasa a este dispositivo los datos de otro. No incluye el sonido, la vibración ni el tema.
+          Guarda tus ejercicios, grupos, calendario, pesos, sesiones y pendientes diarios en un archivo, o pasa a este dispositivo los datos de otro. No incluye el sonido, la vibración ni el tema.
         </p>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button onClick={exportarCopia} style={{ flex: 1, minWidth: 110, padding: "10px 0", borderRadius: 10, border: "none", background: colorAcento, color: "#1C1B19", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
@@ -1867,7 +2040,7 @@ function Configuracion({ config, setConfig, datos, setDatos, sesiones, setSesion
         {copiaPendiente && (
           <div style={{ marginTop: 12 }}>
             <ConfirmarInline
-              mensaje={`Esto reemplazará TODO lo de este dispositivo por la copia${copiaPendiente.exportadoEn && fechaDeCopia(copiaPendiente.exportadoEn) ? ` del ${fechaDeCopia(copiaPendiente.exportadoEn)}` : ""}: ${copiaPendiente.datos.ejercicios.length} ejercicios, ${copiaPendiente.datos.grupos.length} grupos y ${copiaPendiente.sesiones.length} sesiones. Lo que tienes ahora se perderá y no se puede deshacer.`}
+              mensaje={`Esto reemplazará TODO lo de este dispositivo por la copia${copiaPendiente.exportadoEn && fechaDeCopia(copiaPendiente.exportadoEn) ? ` del ${fechaDeCopia(copiaPendiente.exportadoEn)}` : ""}: ${copiaPendiente.datos.ejercicios.length} ejercicios, ${copiaPendiente.datos.grupos.length} grupos y ${copiaPendiente.sesiones.length} sesiones.${copiaPendiente.pendientes ? ` Incluye ${copiaPendiente.pendientes.length} pendientes diarios.` : ""} Lo que tienes ahora se perderá y no se puede deshacer.`}
               textoConfirmar="Sí, reemplazar" onConfirmar={confirmarImportacion} onCancelar={() => setCopiaPendiente(null)} />
           </div>
         )}
@@ -1915,6 +2088,7 @@ export default function GymTracker() {
   const [sesiones, setSesiones] = useEstadoPersistente("gymtracker2:sesiones", []);
   const [configGuardada, setConfig] = useEstadoPersistente("gymtracker2:config", CONFIG_INICIAL);
   const [rutina, setRutina] = useEstadoPersistente("gymtracker2:rutina", null);
+  const [pendientes, setPendientes] = useEstadoPersistente("gymtracker2:pendientes", PENDIENTES_INICIALES);
   const [grupoEditId, setGrupoEditId] = useState(null);
 
   const config = { ...CONFIG_INICIAL, ...configGuardada };
@@ -1958,11 +2132,11 @@ export default function GymTracker() {
         </div>
 
         {/* Rutina nunca se desmonta: así el temporizador y los avisos siguen aunque estés en otra pestaña */}
-        <Rutina datos={datos} rutina={rutina} setRutina={setRutina} config={config} setSesiones={setSesiones} visible={seccion === "rutina"} />
+        <Rutina datos={datos} rutina={rutina} setRutina={setRutina} config={config} setSesiones={setSesiones} pendientes={pendientes} setPendientes={setPendientes} visible={seccion === "rutina"} />
 
         {seccion === "grupos" && <Grupos datos={datos} setDatos={setDatos} grupoEditId={grupoEditId} setGrupoEditId={setGrupoEditId} colorAcento={colorAcento} />}
         {seccion === "ejercicios" && <Ejercicios datos={datos} setDatos={setDatos} colorAcento={colorAcento} />}
-        {seccion === "config" && <Configuracion config={config} setConfig={setConfig} datos={datos} setDatos={setDatos} sesiones={sesiones} setSesiones={setSesiones} colorAcento={colorAcento} />}
+        {seccion === "config" && <Configuracion config={config} setConfig={setConfig} datos={datos} setDatos={setDatos} sesiones={sesiones} setSesiones={setSesiones} pendientes={pendientes} setPendientes={setPendientes} colorAcento={colorAcento} />}
       </div>
     </div>
   );
